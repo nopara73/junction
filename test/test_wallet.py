@@ -1,4 +1,5 @@
 import unittest
+import time
 import tempfile
 import os
 from junction import MultisigWallet, JunctionError
@@ -9,29 +10,53 @@ import disk
 from utils import JSONRPCException
 
 derivation_path = "m/44h/1h/0h"
+
 signers = [
-    ('ledger', '6bb3d403', 'tpubDCpR7Xjiho9KdidtHf3gJ1ZRbzu64HAiYTG9vR6JE5jJrPZbqJYBVXT33rFboKG8PBh4rJudjpBjFjD4ADwdwKUdMYZGJr2bBvLNBZLPMyF', derivation_path),
-
-    ('coldcard', '5b98d98d', 'tpubDDSFSPwTa8AnvogHXTsJ29745CDLrSmn9Jsi5LN9ks1T6szBk7xmkNAjZ1gXfQHdfuD1rae939z93rXE7he3QkLxNmaLh1XuvyzZoTAAWYm', derivation_path),
-    ('trezor', 'ecbc6bc1', 'tpubDDsVS9pwqzLB92RZ6uTiixhDLPcoL1JESsYUCGootaTYu4JVh1aCu5t9oY3RRC1ic2dAbt7AqsE8uXLeq1p2DC5SP27ntmx4dUUPnvWhNhW', derivation_path),
+    {
+        'name': 'trezor', 
+        'fingerprint': 'ecbc6bc1', 
+        'xpub': 'tpubDDsVS9pwqzLB92RZ6uTiixhDLPcoL1JESsYUCGootaTYu4JVh1aCu5t9oY3RRC1ic2dAbt7AqsE8uXLeq1p2DC5SP27ntmx4dUUPnvWhNhW',
+        'derivation_path': derivation_path,
+    },
+    {
+        'name': 'ledger', 
+        'fingerprint': '6bb3d403', 
+        'xpub': 'tpubDCpR7Xjiho9KdidtHf3gJ1ZRbzu64HAiYTG9vR6JE5jJrPZbqJYBVXT33rFboKG8PBh4rJudjpBjFjD4ADwdwKUdMYZGJr2bBvLNBZLPMyF',
+        'derivation_path': derivation_path,
+    },
+    {
+        'name': 'coldcard', 
+        'fingerprint': '5b98d98d', 
+        'xpub': 'tpubDDSFSPwTa8AnvogHXTsJ29745CDLrSmn9Jsi5LN9ks1T6szBk7xmkNAjZ1gXfQHdfuD1rae939z93rXE7he3QkLxNmaLh1XuvyzZoTAAWYm',
+        'derivation_path': derivation_path,
+    },
 ]
-TEST_WALLET_NAME = '____test_wallet'
 
-def make_wallet_file():
+def wait_for_shutdown(rpc):
+    on = True
+    while on:
+        try:
+            rpc.getblockchaininfo()
+        except:
+            on = False
+        time.sleep(1)
+
+def make_wallet_file(wallet_name):
     wallet_file = {
-        'name': TEST_WALLET_NAME,
+        'name': wallet_name,
         'm': '2',
         'n': '3',
         'signers': signers,
         'psbt': '',
         'address_index': 0
     }
-    disk.write_json_file(wallet_file, 'wallets/____test_wallet.json')
+    disk.write_json_file(wallet_file, f'wallets/{wallet_name}.json')
 
 class WalletTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.maxDiff = 10000  # FIXME: descriptor test maxed out this parameter
         test_dir = os.path.dirname(os.path.realpath(__file__))
         bitcoind_path = os.path.join(test_dir, 'bitcoin/src/bitcoind')
         cls.rpc, cls.rpc_username, cls.rpc_password = start_bitcoind(bitcoind_path)
@@ -77,19 +102,19 @@ class WalletTests(unittest.TestCase):
 
         # add first signer
         derivation_path = "m/44h/1h/0h"
-        wallet.add_signer(*signers[0])
+        wallet.add_signer(**signers[0])
         self.assertFalse(wallet.ready())
 
         # add second signer
-        wallet.add_signer(*signers[1])
+        wallet.add_signer(**signers[1])
         self.assertFalse(wallet.ready())
 
         # can't add same signer twice
         with self.assertRaises(JunctionError):
-            wallet.add_signer(*signers[1])
+            wallet.add_signer(**signers[1])
 
         # add third signer
-        wallet.add_signer(*signers[2])
+        wallet.add_signer(**signers[2])
         self.assertTrue(wallet.ready())
         # check that we can derive addresses
         self.assertIsNotNone(wallet.address())
@@ -103,16 +128,17 @@ class WalletTests(unittest.TestCase):
         with self.assertRaises(JunctionError):
             wallet = MultisigWallet.create('test_create_wallet_already_exists', 2, 3)
 
+    @unittest.skip('still deciding correct behavior')
     def test_watchonly_already_exists(self):
         self.rpc.createwallet('test_watchonly_already_exists')
         wallet = MultisigWallet.create('test_watchonly_already_exists', 2, 3)
-        wallet.add_signer(*signers[0])
-        wallet.add_signer(*signers[1])
+        wallet.add_signer(**signers[0])
+        wallet.add_signer(**signers[1])
         # not sure what right behavior is here
         # maybe we can verify that the old watch-only wallet
         # has same addresses? we don't want non-junction utxos showing up ...
         with self.assertRaises(JSONRPCException):
-            wallet.add_signer(*signers[2])
+            wallet.add_signer(**signers[2])
 
         # watch-only wallet
         # - is created
@@ -130,29 +156,34 @@ class WalletTests(unittest.TestCase):
             MultisigWallet.open('test_open_wallet_doesnt_exist')
 
     def test_open_wallet_watchonly_doesnt_exist(self):
-        make_wallet_file()
+        make_wallet_file(self._testMethodName)
         # watch-only wallet doesn't exist
-        self.assertNotIn(TEST_WALLET_NAME, self.rpc.listwallets())
+        self.assertNotIn(self._testMethodName, self.rpc.listwallets())
         # load wallet
-        wallet = MultisigWallet.open(TEST_WALLET_NAME)
+        wallet = MultisigWallet.open(self._testMethodName)
         # watch-only wallet was created
-        self.assertIn(TEST_WALLET_NAME, self.rpc.listwallets())
+        self.assertIn(self._testMethodName, self.rpc.listwallets())
 
     def test_save_wallet(self):
         # try to make sure that wallet files can't be overwritten accidentally
         # open and save is idempotent
-        make_wallet_file()
-        wallet_file_path = os.path.join(self.wallet_dir, f'{TEST_WALLET_NAME}.json')
+        make_wallet_file(self._testMethodName)
+        wallet_file_path = os.path.join(self.wallet_dir, f'{self._testMethodName}.json')
+        print(os.listdir(self.wallet_dir))
         with open(wallet_file_path, 'r') as f:
             initial_contents = f.read()
-        wallet = MultisigWallet.open(TEST_WALLET_NAME)
+        wallet = MultisigWallet.open(self._testMethodName)
         wallet.save()
         with open(wallet_file_path, 'r') as f:
             final_contents = f.read()
         assert initial_contents == final_contents
 
     def test_descriptor(self):
-        pass
+        make_wallet_file(self._testMethodName)
+        wallet = MultisigWallet.open(self._testMethodName)
+        want = "sh(multi(2,[ecbc6bc1/44'/1'/0']tpubDDsVS9pwqzLB92RZ6uTiixhDLPcoL1JESsYUCGootaTYu4JVh1aCu5t9oY3RRC1ic2dAbt7AqsE8uXLeq1p2DC5SP27ntmx4dUUPnvWhNhW/0/*,[6bb3d403/44'/1'/0']tpubDCpR7Xjiho9KdidtHf3gJ1ZRbzu64HAiYTG9vR6JE5jJrPZbqJYBVXT33rFboKG8PBh4rJudjpBjFjD4ADwdwKUdMYZGJr2bBvLNBZLPMyF/0/*,[5b98d98d/44'/1'/0']tpubDDSFSPwTa8AnvogHXTsJ29745CDLrSmn9Jsi5LN9ks1T6szBk7xmkNAjZ1gXfQHdfuD1rae939z93rXE7he3QkLxNmaLh1XuvyzZoTAAWYm/0/*))#ef6uqs3s"
+        self.assertEqual(want, wallet.descriptor())
+
 
     def test_address(self):
         # generate N new addresses, make sure that none violate BIP67
